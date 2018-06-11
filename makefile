@@ -1,3 +1,3 @@
 
-ion: ion.c
-	gcc ion.c -Wall -Wextra
+main: main.c
+	gcc main.c -Wall -Wextra
