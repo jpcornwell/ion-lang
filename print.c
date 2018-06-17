@@ -4,7 +4,21 @@ void print_decl(Decl *decl);
 
 int indent;
 
-void print_newline() {
+char *print_buf;
+bool use_print_buf;
+
+#define printf(...) (use_print_buf ? (void)buf_printf(print_buf, __VA_ARGS__) : (void)printf(__VA_ARGS__))
+
+void flush_print_buf(FILE *file) {
+    if (print_buf) {
+        if (file) {
+            fputs(print_buf, file);
+        }
+        buf_clear(print_buf);
+    }
+}
+
+void print_newline(void) {
     printf("\n%.*s", 2*indent, "                                                                      ");
 }
 
@@ -20,8 +34,12 @@ void print_typespec(Typespec *type) {
             printf(" ");
             print_typespec(*it);
         }
-        printf(") ");
-        print_typespec(t->func.ret);
+        printf(" ) ");
+        if (t->func.ret) {
+            print_typespec(t->func.ret);
+        } else {
+            printf("void");
+        }
         printf(")");
         break;
     case TYPESPEC_ARRAY:
@@ -57,14 +75,14 @@ void print_expr(Expr *expr) {
     case EXPR_NAME:
         printf("%s", e->name);
         break;
-    case EXPR_SIZEOF:
-        printf("(sizeof ");
-        if (e->sizeof_expr.kind == SIZEOF_EXPR) {
-            print_expr(e->sizeof_expr.expr);
-        } else {
-            assert(e->sizeof_expr.kind == SIZEOF_TYPE);
-            print_typespec(e->sizeof_expr.type);
-        }
+    case EXPR_SIZEOF_EXPR:
+        printf("(sizeof-expr ");
+        print_expr(e->sizeof_expr);
+        printf(")");
+        break;
+    case EXPR_SIZEOF_TYPE:
+        printf("(sizeof-type ");
+        print_typespec(e->sizeof_type);
         printf(")");
         break;
     case EXPR_CAST:
@@ -102,19 +120,30 @@ void print_expr(Expr *expr) {
         } else {
             printf("nil");
         }
-        for (Expr **it = e->compound.args; it != e->compound.args + e->compound.num_args; it++) {
+        for (CompoundField *it = e->compound.fields; it != e->compound.fields + e->compound.num_fields; it++) {
             printf(" ");
-            print_expr(*it);
+            if (it->kind == FIELD_DEFAULT) {
+                printf("(nil ");
+            } else if (it->kind == FIELD_NAME) {
+                printf("(name %s ", it->name);
+            } else {
+                assert(it->kind == FIELD_INDEX);
+                printf("(index ");
+                print_expr(it->index);
+                printf(" ");
+            }
+            print_expr(it->init);
+            printf(")");
         }
         printf(")");
         break;
     case EXPR_UNARY:
-        printf("(%s ", temp_token_kind_str(e->unary.op));
+        printf("(%s ", token_kind_name(e->unary.op));
         print_expr(e->unary.expr);
         printf(")");
         break;
     case EXPR_BINARY:
-        printf("(%s ", temp_token_kind_str(e->binary.op));
+        printf("(%s ", token_kind_name(e->binary.op));
         print_expr(e->binary.left);
         printf(" ");
         print_expr(e->binary.right);
@@ -135,7 +164,7 @@ void print_expr(Expr *expr) {
     }
 }
 
-void print_stmt_block(StmtBlock block) {
+void print_stmt_block(StmtList block) {
     printf("(block");
     indent++;
     for (Stmt **it = block.stmts; it != block.stmts + block.num_stmts; it++) {
@@ -149,9 +178,15 @@ void print_stmt_block(StmtBlock block) {
 void print_stmt(Stmt *stmt) {
     Stmt *s = stmt;
     switch (s->kind) {
+    case STMT_DECL:
+        print_decl(s->decl);
+        break;
     case STMT_RETURN:
-        printf("(return ");
-        print_expr(s->return_stmt.expr);
+        printf("(return");
+        if (s->expr) {
+            printf(" ");
+            print_expr(s->expr);
+        }
         printf(")");
         break;
     case STMT_BREAK:
@@ -262,10 +297,10 @@ void print_aggregate_decl(Decl *decl) {
     for (AggregateItem *it = d->aggregate.items; it != d->aggregate.items + d->aggregate.num_items; it++) {
         print_newline();
         printf("(");
-        print_typespec(it->type);
         for (const char **name = it->names; name != it->names + it->num_names; name++) {
-            printf(" %s", *name);
+            printf("%s ", *name);
         }
+        print_typespec(it->type);
         printf(")");
     }
 }
@@ -311,7 +346,11 @@ void print_decl(Decl *decl) {
             printf("nil");
         }
         printf(" ");
-        print_expr(d->var.expr);
+        if (d->var.expr) {
+            print_expr(d->var.expr);
+        } else {
+            printf("nil");
+        }
         printf(")");
         break;
     case DECL_CONST:
@@ -349,17 +388,18 @@ void print_decl(Decl *decl) {
     }
 }
 
-void print_test() {
+
+void print_test(void) {
+    use_print_buf = true;
     // Expressions
     Expr *exprs[] = {
-        expr_binary('+', expr_int(1), expr_int(2)),
-        expr_unary('-', expr_float(3.14)),
+        expr_binary(TOKEN_ADD, expr_int(1), expr_int(2)),
+        expr_unary(TOKEN_SUB, expr_float(3.14)),
         expr_ternary(expr_name("flag"), expr_str("true"), expr_str("false")),
         expr_field(expr_name("person"), "name"),
         expr_call(expr_name("fact"), (Expr*[]){expr_int(42)}, 1),
         expr_index(expr_field(expr_name("person"), "siblings"), expr_int(3)),
         expr_cast(typespec_ptr(typespec_name("int")), expr_name("void_ptr")),
-        expr_compound(typespec_name("Vector"), (Expr*[]){expr_int(1), expr_int(2)}, 2),
     };
     for (Expr **it = exprs; it != exprs + sizeof(exprs)/sizeof(*exprs); it++) {
         print_expr(*it);
@@ -372,7 +412,7 @@ void print_test() {
         stmt_break(),
         stmt_continue(),
         stmt_block(
-            (StmtBlock){
+            (StmtList){
                 (Stmt*[]){
                     stmt_break(),
                     stmt_continue()
@@ -384,7 +424,7 @@ void print_test() {
         stmt_init("x", expr_int(42)),
         stmt_if(
             expr_name("flag1"),
-            (StmtBlock){
+            (StmtList){
                 (Stmt*[]){
                     stmt_return(expr_int(1))
                 },
@@ -392,7 +432,7 @@ void print_test() {
             },
             (ElseIf[]){
                 expr_name("flag2"),
-                (StmtBlock){
+                (StmtList){
                     (Stmt*[]){
                         stmt_return(expr_int(2))
                     },
@@ -400,7 +440,7 @@ void print_test() {
                 }
             },
             1,
-            (StmtBlock){
+            (StmtList){
                 (Stmt*[]){
                     stmt_return(expr_int(3))
                 },
@@ -409,7 +449,7 @@ void print_test() {
         ),
         stmt_while(
             expr_name("running"),
-            (StmtBlock){
+            (StmtList){
                 (Stmt*[]){
                     stmt_assign(TOKEN_ADD_ASSIGN, expr_name("i"), expr_int(16)),
                 },
@@ -423,7 +463,7 @@ void print_test() {
                     (Expr*[]){expr_int(3), expr_int(4)},
                     2,
                     false,
-                    (StmtBlock){
+                    (StmtList){
                         (Stmt*[]){stmt_return(expr_name("val"))},
                         1,
                     },
@@ -432,7 +472,7 @@ void print_test() {
                     (Expr*[]){expr_int(1)},
                     1,
                     true,
-                    (StmtBlock){
+                    (StmtList){
                         (Stmt*[]){stmt_return(expr_int(0))},
                         1,
                     },
@@ -445,4 +485,8 @@ void print_test() {
         print_stmt(*it);
         printf("\n");
     }
+    flush_print_buf(stdout);
+    use_print_buf = false;
 }
+
+#undef printf

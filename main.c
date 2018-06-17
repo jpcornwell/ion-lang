@@ -17,12 +17,16 @@
 #include "ast.c"    
 #include "print.c"
 #include "parse.c"
+#include "resolve.c"
+#include "gen.c"
 
-void main_test() {
+void main_test(void) {
     common_test();
     lex_test();
     // print_test();
-    parse_test();
+    // parse_test();
+    // resolve_test();
+    gen_test();
 }
 
 int main(int argc, char **argv) {

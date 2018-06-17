@@ -1,4 +1,5 @@
 #define MAX(x, y) ((x) >= (y) ? (x) : (y))
+#define IS_POW2(x) (((x) != 0) && ((x) & ((x)-1)) == 0)
 #define ALIGN_DOWN(n, a) ((n) & ~((a) - 1))
 #define ALIGN_UP(n, a) ALIGN_DOWN((n) + (a) - 1, (a))
 #define ALIGN_DOWN_PTR(p, a) ((void *)ALIGN_DOWN((uintptr_t)(p), (a)))
@@ -31,6 +32,12 @@ void *xmalloc(size_t num_bytes) {
     return ptr;
 }
 
+void *memdup(void *src, size_t size) {
+    void *dest = xmalloc(size);
+    memcpy(dest, src, size);
+    return dest;
+}
+
 void fatal(const char *fmt, ...) {
     va_list args;
     va_start(args, fmt);
@@ -60,6 +67,18 @@ void fatal_syntax_error(const char *fmt, ...) {
     exit(1);
 }
 
+char *strf(const char *fmt, ...) {
+    va_list args;
+    va_start(args, fmt);
+    size_t n = 1 + vsnprintf(NULL, 0, fmt, args);
+    va_end(args);
+    char *str = xmalloc(n);
+    va_start(args, fmt);
+    vsnprintf(str, n, fmt, args);
+    va_end(args);
+    return str;
+}
+
 // Stretchy buffers, invented (?) by Sean Barrett
 
 typedef struct BufHdr {
@@ -78,6 +97,8 @@ typedef struct BufHdr {
 #define buf_free(b) ((b) ? (free(buf__hdr(b)), (b) = NULL) : 0)
 #define buf_fit(b, n) ((n) <= buf_cap(b) ? 0 : ((b) = buf__grow((b), (n), sizeof(*(b)))))
 #define buf_push(b, ...) (buf_fit((b), 1 + buf_len(b)), (b)[buf__hdr(b)->len++] = (__VA_ARGS__))
+#define buf_printf(b, ...) ((b) = buf__printf((b), __VA_ARGS__))
+#define buf_clear(b) ((b) ? buf__hdr(b)->len = 0 : 0)
 
 void *buf__grow(const void *buf, size_t new_len, size_t elem_size) {
     assert(buf_cap(buf) <= (SIZE_MAX - 1)/2);
@@ -96,7 +117,26 @@ void *buf__grow(const void *buf, size_t new_len, size_t elem_size) {
     return new_hdr->buf;
 }
 
-void buf_test() {
+char *buf__printf(char *buf, const char *fmt, ...) {
+    va_list args;
+    va_start(args, fmt);
+    size_t cap = buf_cap(buf) - buf_len(buf);
+    size_t n = 1 + vsnprintf(buf_end(buf), cap, fmt, args);
+    va_end(args);
+    if (n > cap) {
+        buf_fit(buf, n + buf_len(buf));
+        va_start(args, fmt);
+        size_t new_cap = buf_cap(buf) - buf_len(buf);
+        n = 1 + vsnprintf(buf_end(buf), new_cap, fmt, args);
+        assert(n <= new_cap);
+        va_end(args);
+    }
+    buf__hdr(buf)->len += n - 1;
+    return buf;
+}
+
+
+void buf_test(void) {
     int *buf = NULL;
     assert(buf_len(buf) == 0);
     int n = 1024;
@@ -110,6 +150,11 @@ void buf_test() {
     buf_free(buf);
     assert(buf == NULL);
     assert(buf_len(buf) == 0);
+    char *str = NULL;
+    buf_printf(str, "One: %d\n", 1);
+    assert(strcmp(str, "One: 1\n") == 0);
+    buf_printf(str, "Hex: 0x%x\n", 0x12345678);
+    assert(strcmp(str, "One: 1\nHex: 0x12345678\n") == 0);
 }
 
 // Arena allocator
@@ -127,6 +172,7 @@ typedef struct Arena {
 void arena_grow(Arena *arena, size_t min_size) {
     size_t size = ALIGN_UP(MAX(ARENA_BLOCK_SIZE, min_size), ARENA_ALIGNMENT);
     arena->ptr = xmalloc(size);
+    assert(arena->ptr == ALIGN_DOWN_PTR(arena->ptr, ARENA_ALIGNMENT));
     arena->end = arena->ptr + size;
     buf_push(arena->blocks, arena->ptr);
 }
@@ -147,6 +193,7 @@ void arena_free(Arena *arena) {
     for (char **it = arena->blocks; it != buf_end(arena->blocks); it++) {
         free(*it);
     }
+    buf_free(arena->blocks);
 }
 
 // String interning
@@ -177,7 +224,7 @@ const char *str_intern(const char *str) {
     return str_intern_range(str, str + strlen(str));
 }
 
-void intern_test() {
+void intern_test(void) {
     char a[] = "hello";
     assert(strcmp(a, str_intern(a)) == 0);
     assert(str_intern(a) == str_intern(a));
@@ -191,7 +238,14 @@ void intern_test() {
     assert(str_intern(a) != str_intern(d));
 }
 
-void common_test() {
+void common_test(void) {
     buf_test();
     intern_test();
+
+    char *str1 = strf("%d %d", 1, 2);
+    assert(strcmp(str1, "1 2") == 0);
+    char *str2 = strf("%s %s", str1, str1);
+    assert(strcmp(str2, "1 2 1 2") == 0);
+    char *str3 = strf("%s asdf %s", str2, str2);
+    assert(strcmp(str3, "1 2 1 2 asdf 1 2 1 2") == 0);
 }
